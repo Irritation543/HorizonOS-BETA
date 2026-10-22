@@ -1,6 +1,3 @@
-//! Файловая система FAT32, только чтение. Диск размечен без таблицы
-//! разделов («суперфлоппи»): FAT32 начинается прямо с LBA 0. Длинные
-//! имена (VFAT/LFN) пока не разбираются — только короткие имена 8.3.
 use crate::ahci::Disk;
 use alloc::format;
 use alloc::string::String;
@@ -15,14 +12,13 @@ pub struct Fs {
 }
 
 pub struct DirEntry {
-    name: [u8; 11], // как на диске: 8 байт имени + 3 байта расширения, пробелами дополнено
+    name: [u8; 11],
     pub is_dir: bool,
     pub size: u32,
     pub cluster: u32,
 }
 
 impl DirEntry {
-    /// Имя вида «ИМЯ.РАСШИРЕНИЕ» для показа пользователю.
     pub fn display_name(&self) -> String {
         let base = core::str::from_utf8(&self.name[0..8]).unwrap_or("").trim_end();
         let ext = core::str::from_utf8(&self.name[8..11]).unwrap_or("").trim_end();
@@ -33,22 +29,18 @@ impl DirEntry {
         }
     }
 
-    /// Сравнение с именем в формате 8.3 без учёта регистра, например "HELLO.TXT".
     pub fn matches(&self, short_name: &str) -> bool {
         self.display_name().eq_ignore_ascii_case(short_name)
     }
 }
 
-/// Разобрать загрузочный сектор (BPB) и подготовиться к чтению.
-/// `None`, если это не FAT32 с сектором 512 байт (например, диск не
-/// подключён, не отформатирован, или это FAT12/16).
 pub fn mount(disk: &mut Disk) -> Option<Fs> {
-    let mut boot = vec![0u8; 512]; // должен быть в куче — см. предупреждение в ahci.rs
+    let mut boot = vec![0u8; 512];
     if !disk.read(0, 1, &mut boot) {
         return None;
     }
     if boot[510] != 0x55 || boot[511] != 0xAA {
-        return None; // нет сигнатуры загрузочного сектора
+        return None;
     }
     let bytes_per_sector = u16::from_le_bytes([boot[11], boot[12]]) as u32;
     let sectors_per_cluster = boot[13] as u32;
@@ -58,7 +50,7 @@ pub fn mount(disk: &mut Disk) -> Option<Fs> {
     let root_cluster = u32::from_le_bytes(boot[44..48].try_into().unwrap());
 
     if bytes_per_sector != 512 || fat_size32 == 0 || root_cluster < 2 || sectors_per_cluster == 0 {
-        return None; // не FAT32, или нестандартный размер сектора — не поддерживаем
+        return None;
     }
 
     Some(Fs {
@@ -102,13 +94,13 @@ impl Fs {
             }
             for chunk in buf.chunks_exact(32) {
                 match chunk[0] {
-                    0x00 => return out, // конец каталога
-                    0xE5 => continue,   // удалённая запись
+                    0x00 => return out,
+                    0xE5 => continue,
                     _ => {}
                 }
                 let attr = chunk[11];
                 if attr == 0x0F || attr & 0x08 != 0 {
-                    continue; // часть длинного имени или метка тома — пропускаем
+                    continue;
                 }
                 let mut name = [0u8; 11];
                 name.copy_from_slice(&chunk[0..11]);
@@ -128,7 +120,6 @@ impl Fs {
         self.read_dir(disk, self.root_cluster)
     }
 
-    /// Прочитать файл целиком по его записи в каталоге.
     pub fn read_file(&self, disk: &mut Disk, entry: &DirEntry) -> Option<Vec<u8>> {
         let mut out = vec![0u8; entry.size as usize];
         if out.is_empty() {
